@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>纳指定投计算器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --ios-blue: #007aff;
+            --profit: #ff3b30; /* 红涨 */
+            --loss: #34c759;   /* 绿跌 */
+        }
+        body { font-family: 'Inter', -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f5f7; color: #1d1d1f; -webkit-font-smoothing: antialiased; }
+        .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, monospace; }
+
+        /* 修复明细表背景截断：设定最小宽度，并让外层可以顺利左右滑动 */
+        .audit-container { min-width: 530px; margin: 0 auto; background: #fff; border-radius: 20px; padding: 12px; border: 1px solid #e5e5ea; }
+        .audit-grid {
+            display: grid;
+            /* 精确锁定每一列宽度 (单位: px) 刚好 515px 左右 */
+            grid-template-columns: 50px 85px 80px 85px 85px 65px 65px;
+            align-items: center;
+            width: 100%;
+        }
+        /* 表头取消灰色，改为黑色 */
+        .audit-header { border-bottom: 2px solid #1d1d1f; padding-bottom: 8px; font-weight: 700; font-size: 10px; color: #000; text-transform: uppercase; }
+        .audit-row { border-bottom: 1px solid #f2f2f7; padding: 6px 0; font-size: 11px; }
+        
+        .cell-right { text-align: right; padding-right: 4px; }
+        .cell-center { text-align: center; }
+
+        /* 颜色控制 */
+        .txt-profit { color: var(--profit) !important; }
+        .txt-loss { color: var(--loss) !important; }
+
+        .summary-card { background: #000; border-radius: 40px; color: #fff; padding: 35px 25px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.3); }
+
+        .selector-box { padding: 10px; border: 2px solid #e5e5ea; border-radius: 14px; background: #fff; cursor: pointer; text-align: center; transition: all 0.2s; }
+        .selector-box .yr-num { font-size: 20px; font-weight: 800; display: block; line-height: 1; margin-bottom: 2px; }
+        .selector-box .yr-unit { font-size: 9px; opacity: 0.5; font-weight: 700; }
+        .selector-active { background: var(--ios-blue) !important; color: #fff !important; border-color: var(--ios-blue) !important; box-shadow: 0 8px 15px rgba(0,122,255,0.3); }
+
+        input, select { border: 1px solid #d2d2d7 !important; padding: 12px !important; border-radius: 12px !important; outline: none; background: #fff; }
+        
+        /* 隐藏 input type="number" 默认的上下加减箭头，由用户纯输入 */
+        input[type=number]::-webkit-inner-spin-button,
+        input[type=number]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type=number] {
+            -moz-appearance: textfield;
+        }
+
+        .btn-blue { background: var(--ios-blue); color: #fff; padding: 20px; border-radius: 20px; font-weight: 700; width: 100%; border: none; font-size: 18px; transition: 0.2s; cursor: pointer; }
+        .btn-blue:active { transform: scale(0.97); }
+
+        #poster-source { width: 375px; height: 780px; position: absolute; left: -9999px; background: #000; color: #fff; padding: 40px 30px; display: flex; flex-direction: column; }
+        
+        /* 修复拖动延迟与卡顿：加入 iOS 滑动平滑属性，移除毛玻璃导致的高消耗渲染 */
+        #img-modal-content { 
+            width: 100%; max-width: 400px; 
+            max-height: 75vh; 
+            overflow-y: auto; 
+            border-radius: 24px; 
+            box-shadow: 0 40px 100px rgba(0,0,0,0.5); 
+            -webkit-overflow-scrolling: touch; 
+            overscroll-behavior: contain;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-10">
+
+    <div class="max-w-4xl mx-auto space-y-6">
+        <header class="pb-6 border-b border-black/5">
+            <h1 class="text-3xl font-800 italic tracking-tighter uppercase leading-none">纳指定投计算器</h1>
+            <p class="text-[10px] text-gray-400 mt-3 font-bold uppercase tracking-widest">NASDAQ 1980 - 2026 全量回测系统</p>
+        </header>
+
+        <!-- 1. 参数设置 -->
+        <div class="bg-white border border-gray-100 p-6 rounded-[28px] shadow-sm space-y-6">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                <div><label class="text-[11px] font-bold text-gray-400 uppercase mb-1 block">期初本金</label><input type="number" id="base-cap" value="100000" class="w-full"></div>
+                <div><label class="text-[11px] font-bold text-gray-400 uppercase mb-1 block">每月定投金额</label><input type="number" id="monthly-amt" value="10000" class="w-full"></div>
+            </div>
+            <!-- 修复日期重叠：改为 grid-cols-1 sm:grid-cols-2 手机端上下排列 -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-gray-50 pt-4">
+                <div><label class="text-[11px] font-bold text-gray-400 block mb-1">开始回测时间</label><div class="flex space-x-1"><select id="start-year" class="flex-1"></select><select id="start-month" class="w-20"></select></div></div>
+                <div><label class="text-[11px] font-bold text-gray-400 block mb-1">结束回测时间</label><div class="flex space-x-1"><select id="end-year" class="flex-1"></select><select id="end-month" class="w-20"></select></div></div>
+            </div>
+            <button onclick="calculate()" class="w-full bg-black text-white p-5 rounded-2xl font-800 text-xl active:scale-[0.98] transition-all">生成深度对账单</button>
+        </div>
+
+        <!-- 2. 回测分析结果 -->
+        <section id="result-area" class="hidden space-y-12">
+            <div class="summary-card space-y-10">
+                <div class="space-y-4">
+                    <p class="text-[11px] text-gray-500 font-bold uppercase tracking-[0.3em]">期末账户总资产</p>
+                    <h2 id="sum-final-asset" class="text-6xl sm:text-7xl font-800 tracking-tighter italic leading-none text-white">¥0</h2>
+                    <div class="pt-2">
+                        <p class="text-[11px] text-gray-500 font-bold uppercase tracking-[0.2em] mb-1">已实现利润 (Realized Profit)</p>
+                        <p id="sum-profit-val" class="text-4xl font-800 tracking-tight italic"></p>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 gap-6 pt-10 border-t border-white/10">
+                    <div class="flex justify-between items-center"><p class="text-xs text-gray-400 font-bold uppercase">投入总成本</p><p id="sum-principal" class="text-xl font-bold mono"></p></div>
+                    <div class="flex justify-between items-center border-t border-white/5 pt-4"><p class="text-xs text-gray-400 font-bold uppercase">累计总收益率</p><p id="sum-total-rate" class="text-xl font-bold mono"></p></div>
+                    <div class="flex justify-between items-center border-t border-white/5 pt-4"><p class="text-xs text-gray-400 font-bold uppercase">复合年化(CAGR)</p><p id="sum-cagr" class="text-xl font-bold mono text-blue-400"></p></div>
+                </div>
+            </div>
+
+            <!-- 财富明细表 -->
+            <div class="space-y-4 text-center sm:text-left">
+                <h3 class="font-800 text-black text-lg px-2">财富逐年增长明细</h3>
+                <div class="overflow-x-auto pb-4">
+                    <div class="audit-container">
+                        <div class="audit-grid audit-header mono">
+                            <div class="pl-2">年份</div>
+                            <div class="cell-right">年初资产</div>
+                            <div class="cell-right">年投入</div>
+                            <div class="cell-right">累计已投</div>
+                            <div class="cell-right">期末资产</div>
+                            <div class="cell-center">累计ROI</div>
+                            <div class="cell-center">当年指数</div>
+                        </div>
+                        <div id="annual-list-rows" class="mono"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 未来推演控制台 -->
+            <div class="pt-10 border-t-2 border-black space-y-8">
+                <h2 class="text-2xl font-bold italic uppercase">延续复利奇迹</h2>
+                <div class="bg-white border border-gray-100 rounded-[32px] p-6 sm:p-8 space-y-10 shadow-sm">
+                    <div>
+                        <label class="input-label text-blue-600 font-800">未来每月预测继续定投额 (元)</label>
+                        <!-- 修复输入框数字遮挡：缩放按钮文字、添加min-w-0和自适应字体大小 -->
+                        <div class="flex items-center justify-between space-x-2 mt-4">
+                            <button onclick="adjustFutureMonthly(-1000)" class="bg-gray-100 text-black px-3 py-3 sm:px-5 sm:py-4 rounded-xl sm:rounded-2xl font-800 text-lg sm:text-xl active:scale-95 transition-all flex-shrink-0">- 1000</button>
+                            <input type="number" id="future-monthly-amt" class="text-3xl sm:text-4xl font-800 text-black text-center w-full min-w-0 outline-none ring-0 border-none" style="border:none !important; padding:0 !important; background: transparent !important;">
+                            <button onclick="adjustFutureMonthly(1000)" class="bg-gray-100 text-black px-3 py-3 sm:px-5 sm:py-4 rounded-xl sm:rounded-2xl font-800 text-lg sm:text-xl active:scale-95 transition-all flex-shrink-0">+ 1000</button>
+                        </div>
+                    </div>
+                    <div class="space-y-4">
+                        <label class="input-label font-bold">继续定投年限 (预测时长)</label>
+                        <div class="grid grid-cols-3 sm:grid-cols-6 gap-2" id="future-years-wrap"></div>
+                        <div id="custom-years-box" class="hidden mt-3"><input type="number" id="custom-years-val" placeholder="输入年数" class="w-full"></div>
+                    </div>
+                    <div class="space-y-4">
+                        <label class="input-label font-bold">选择预测预期年化</label>
+                        <div class="grid grid-cols-2 lg:grid-cols-4 gap-2" id="future-rates-wrap"></div>
+                        <div id="custom-rate-input-box" class="hidden mt-3"><input type="number" id="custom-rate-val" placeholder="输入年化利率 %" class="bg-blue-50 border-blue-100 w-full"></div>
+                    </div>
+                </div>
+                <button onclick="showPoster()" class="btn-blue shadow-2xl h-20 text-xl font-800">一键推演未来十年收益报告</button>
+            </div>
+        </section>
+    </div>
+
+    <!-- 隐藏海报源 -->
+    <div id="poster-source">
+        <div class="flex justify-between items-center border-b border-white/10 pb-8 mb-10 text-white">
+            <p class="font-800 italic text-base tracking-tighter uppercase text-blue-500">NASDAQ PROJECTED</p>
+            <p class="mono text-[11px] text-gray-500" id="p-date-range"></p>
+        </div>
+        <h2 class="text-[44px] font-800 leading-none tracking-tighter mb-14 italic text-white">时间是财富<br><span class="text-blue-500">唯一的</span>杠杆</h2>
+        <div class="flex-grow space-y-10 text-white">
+            <div class="space-y-4 border-b border-white/10 pb-10">
+                <div><p class="text-gray-500 text-[10px] font-bold uppercase tracking-widest mb-1">当前账户资产</p><p id="p-current-asset" class="text-3xl font-bold text-white"></p></div>
+                <div><p class="text-gray-500 text-[10px] font-bold uppercase tracking-widest mb-1">已实现累计利润</p><p id="p-current-profit" class="text-3xl font-bold"></p></div>
+            </div>
+            <div class="bg-blue-600/10 p-8 rounded-[40px] border border-blue-600/20">
+                <p class="text-blue-400 text-[10px] font-800 uppercase tracking-[0.3em] mb-6"><span id="p-future-years-label"></span>年财富预测 (年化 <span id="p-rate-label"></span>%)</p>
+                <div class="space-y-6">
+                    <div><p class="text-gray-400 text-[10px] uppercase font-bold mb-1">预测总账户价值</p><p id="p-future-val" class="text-[44px] font-800 text-white tracking-tighter leading-none"></p></div>
+                    <div><p class="text-gray-400 text-[10px] uppercase font-bold mb-1">累计本金总量 (已投+续投)</p><p id="p-future-cost" class="text-xl font-bold text-gray-400 mono"></p></div>
+                </div>
+            </div>
+        </div>
+        <div class="mt-8 h-10 relative"><canvas id="posterGrowthChart"></canvas></div>
+    </div>
+
+    <!-- 展示 Modal：移除会导致掉帧拖慢的毛玻璃(backdrop-blur)，使用单纯黑色半透，防卡顿 -->
+    <div id="modal" class="fixed inset-0 bg-black/95 hidden z-50 flex flex-col items-center justify-center p-4">
+        <div id="img-modal-content"><div id="img-out"></div></div>
+        <button onclick="closeModal()" class="mt-8 px-16 py-4 bg-white/10 text-white font-800 rounded-2xl flex-shrink-0">返回修改</button>
+    </div>
+
+    <script>
+        // 全量数据
+        const dataSequence =[157.78,150.45,139.99,139.99,150.45,157.78,171.81,181.52,187.76,192.78,208.15,202.34,197.81,198.01,210.18,216.74,223.47,215.75,211.63,195.75,180.03,195.24,201.37,195.84,188.39,179.43,175.65,184.7,178.54,171.3,167.35,177.71,187.65,212.63,232.31,232.41,248.35,260.67,270.8,293.06,308.73,318.7,303.96,292.42,296.65,274.55,285.67,278.6,268.43,252.57,250.78,247.44,232.82,239.65,229.7,254.64,249.94,247.03,242.53,247.35,278.7,284.17,279.2,280.56,290.8,296.2,301.29,297.71,280.33,292.54,313.95,324.93,335.77,359.53,374.72,383.24,400.16,405.51,371.37,382.86,350.67,360.77,359.57,348.83,392.06,424.97,430.05,417.81,416.54,424.67,434.93,454.97,444.29,323.3,305.16,330.47,344.66,366.95,374.64,379.23,370.34,394.66,387.33,376.55,387.71,382.46,371.45,381.38,401.3,399.71,406.73,427.55,446.17,435.29,453.84,469.33,472.92,455.63,456.09,454.82,415.81,425.83,435.54,420.07,458.97,462.29,438.24,381.21,344.51,329.84,359.06,373.84,414.2,453.05,482.3,484.72,506.11,475.92,502.04,525.68,526.88,542.98,523.9,586.34,620.21,633.47,603.77,578.68,585.31,563.6,580.83,563.12,583.27,605.17,652.73,676.95,696.34,670.77,690.13,661.42,700.53,703.95,704.7,742.84,762.78,779.26,754.39,776.8,800.47,792.5,743.46,733.84,735.19,705.96,722.16,765.62,764.29,777.49,750.32,751.96,755.2,793.73,817.21,843.98,864.58,933.45,1001.21,1020.11,1043.54,1036.06,1059.2,1052.13,1059.79,1100.05,1101.4,1190.52,1243.43,1185.02,1080.59,1141.5,1226.92,1221.51,1292.61,1291.03,1379.85,1309,1221.7,1260.76,1400.32,1442.07,1593.81,1587.32,1685.69,1593.61,1600.55,1570.35,1619.36,1770.51,1835.68,1868.41,1778.87,1894.74,1872.39,1499.25,1693.84,1771.39,1949.54,2192.69,2505.89,2288.03,2461.4,2542.85,2470.52,2686.12,2638.49,2739.35,2746.16,2966.43,3336.16,4069.31,3940.35,4696.69,4572.83,3860.66,3400.91,3966.11,3766.99,4206.35,3672.82,3369.63,2597.93,2470.52,2772.73,2151.83,1840.26,2116.24,2110.49,2161.24,2027.13,1805.43,1498.8,1690.2,1930.58,1950.4,1934.03,1731.49,1845.35,1688.23,1615.73,1463.21,1328.26,1314.85,1172.06,1329.75,1478.78,1335.51,1320.91,1337.52,1341.17,1464.31,1595.91,1622.8,1735.02,1810.45,1786.94,1932.21,1960.26,2003.37,2066.15,2029.82,1994.22,1920.15,1986.74,2047.79,1887.36,1838.1,1896.84,1974.99,2096.81,2175.44,2062.41,2051.72,1999.23,1921.65,2068.22,2056.96,2184.83,2152.09,2151.69,2120.3,2232.82,2205.32,2305.82,2281.39,2339.79,2322.57,2178.88,2172.09,2091.47,2183.75,2258.43,2366.71,2431.77,2415.29,2463.93,2416.15,2421.64,2525.09,2604.52,2603.23,2545.57,2596.36,2701.5,2859.12,2660.96,2652.28,2389.86,2271.48,2279.1,2412.8,2522.66,2292.98,2325.55,2367.52,2091.88,1720.95,1535.57,1577.03,1476.42,1377.84,1528.59,1717.3,1774.33,1835.04,1978.5,2009.06,2122.42,2045.11,2144.6,2269.15,2147.35,2238.26,2397.96,2461.19,2257.04,2109.24,2254.7,2114.03,2368.62,2507.41,2498.23,2652.87,2700.08,2782.27,2781.07,2873.54,2835.3,2773.52,2756.38,2579.46,2415.4,2684.41,2620.34,2605.15,2813.84,2966.89,3091.57,3046.36,2827.34,2935.05,2939.52,3066.96,3116.23,2977.23,3010.24,3019.51,3142.13,3160.19,3267.52,3328.79,3455.91,3403.25,3626.37,3589.87,3771.48,3919.71,4059.89,4176.59,4103.88,4308.12,4198.99,4114.56,4242.62,4408.18,4369.77,4580.27,4493.39,4630.74,4791.63,4736.05,4635.24,4963.53,4900.88,4941.42,5070.02,4986.87,5128.28,4776.51,4620.16,5053.75,5108.67,5007.41,4613.95,4557.95,4869.85,4775.36,4948.06,4842.67,5162.13,5213.22,5312,5189.14,5323.68,5383.12,5614.79,5825.44,5911.74,6047.61,6198.52,6140.42,6348.12,6428.66,6495.96,6727.67,6873.97,6903.39,7411.48,7273.01,7063.44,7066.27,7442.12,7510.3,7671.79,8109.54,8046.35,7305.9,7330.54,6635.28,7281.74,7532.53,7729.32,8095.39,7453.15,8006.24,8175.42,7962.88,7999.33,8292.36,8665.47,8972.6,9150.94,8567.37,7700.1,8889.55,9489.87,10058.76,10745.27,11775.46,11167.68,10911.59,12198.74,12888.28,13070.69,13192.35,13246.87,13962.68,13748.74,14503.95,14672.68,15259.24,14448.58,15498.39,15537.69,15644.97,14239.88,13751.4,14220.52,12334.64,12081.39,11028.74,12390.69,11816.2,10575.62,10988.15,11468,10466.48,11584.55,11455.54,12221.91,12226.58,12935.28,13787.92,14346.02,14034.97,13219.32,12851.24,14226.22,15011.35,15164.01,16091.92,16379.46,15657.82,16735.01,17732.6,17599.4,17713.62,18189.17,18095.15,19218.17,19310.79,19627.44,18847.28,17299.29,17446.34,19113.77,20369.73,21122.45,21455.55,22660.01,23724.96,23365.69,23241.99,23461.82,22668.21,21647.61];
+
+        const rawData =[];
+        let curYear = 1980, curMonth = 1;
+        dataSequence.forEach(p => {
+            const mStr = String(curMonth).padStart(2,'0');
+            rawData.push([`${curYear}/${mStr}`, p]);
+            curMonth++; if(curMonth > 12){ curMonth = 1; curYear++; }
+        });
+
+        const sy = document.getElementById('start-year'), sm = document.getElementById('start-month'), ey = document.getElementById('end-year'), em = document.getElementById('end-month');
+        const uniqueYears = [...new Set(rawData.map(d => d[0].split('/')[0]))];
+        uniqueYears.forEach(y => { sy.add(new Option(y+"年", y)); ey.add(new Option(y+"年", y)); });["01","02","03","04","05","06","07","08","09","10","11","12"].forEach(m => { sm.add(new Option(m+"月", m)); em.add(new Option(m+"月", m)); });
+        sy.value = "2016"; sm.value = "01"; ey.value = "2026"; em.value = "03";
+
+        let results = {}, selectedFutureRate = 0, selectedFutureYears = 10;
+
+        function calculate() {
+            const baseCap = parseFloat(document.getElementById('base-cap').value) || 0;
+            const monthlyAmt = parseFloat(document.getElementById('monthly-amt').value) || 0;
+            const sKey = `${sy.value}/${sm.value}`, eKey = `${ey.value}/${em.value}`;
+            const sIdx = rawData.findIndex(d => d[0] === sKey), eIdx = rawData.findIndex(d => d[0] === eKey);
+
+            if(sIdx < 1 || eIdx <= sIdx) { alert("区间无效或数据不足"); return; }
+            const slice = rawData.slice(sIdx, eIdx + 1);
+            let totalShares = 0, totalInvested = 0, yrStartAsset = baseCap, yrInvested = 0, reports = [];
+
+            totalShares += baseCap / rawData[sIdx-1][1];
+            totalInvested += baseCap;
+
+            slice.forEach((item, idx) => {
+                const gIdx = sIdx + idx;
+                totalShares += monthlyAmt / rawData[gIdx-1][1];
+                totalInvested += monthlyAmt;
+                yrInvested += monthlyAmt;
+                const curAsset = totalShares * item[1];
+
+                if(idx === slice.length - 1 || slice[idx+1][0].split('/')[0] !== item[0].split('/')[0]) {
+                    const prevPrice = rawData[gIdx - (item[0].endsWith('/12') ? 12 : parseInt(item[0].split('/')[1]))][1];
+                    const indexPerf = ((item[1] / prevPrice) - 1) * 100;
+                    reports.push({ 
+                        year: item[0].split('/')[0], startAsset: yrStartAsset, invested: yrInvested, 
+                        cumPrincipal: totalInvested, growth: indexPerf.toFixed(1), 
+                        asset: curAsset, roi: (((curAsset / totalInvested) - 1) * 100).toFixed(1) 
+                    });
+                    yrStartAsset = curAsset; yrInvested = 0;
+                }
+            });
+
+            const finalAsset = totalShares * slice[slice.length-1][1];
+            const yearsLen = slice.length / 12;
+            const cagr = (Math.pow(finalAsset / totalInvested, 1 / yearsLen) - 1) * 100;
+            results = { finalAsset, totalInvested, cagr, monthlyAmt, slice };
+
+            const profit = finalAsset - totalInvested;
+            document.getElementById('sum-final-asset').innerText = '¥' + Math.round(finalAsset).toLocaleString();
+            document.getElementById('sum-profit-val').innerText = (profit > 0 ? '+' : '') + '¥' + Math.round(profit).toLocaleString();
+            document.getElementById('sum-profit-val').className = 'text-4xl font-800 tracking-tight italic ' + (profit >= 0 ? 'txt-profit' : 'txt-loss');
+            document.getElementById('sum-principal').innerText = '¥' + totalInvested.toLocaleString();
+            document.getElementById('sum-total-rate').innerText = ((finalAsset/totalInvested-1)*100).toFixed(1) + '%';
+            document.getElementById('sum-total-rate').className = 'text-xl font-bold mono ' + (profit >= 0 ? 'txt-profit' : 'txt-loss');
+            document.getElementById('sum-cagr').innerText = cagr.toFixed(2) + '%';
+
+            document.getElementById('annual-list-rows').innerHTML = reports.map(r => `
+                <div class="audit-grid audit-row mono">
+                    <div class="pl-2 font-bold text-black">${r.year}</div>
+                    <div class="cell-right font-bold text-black">¥${Math.round(r.startAsset).toLocaleString()}</div>
+                    <div class="cell-right font-bold text-black">¥${Math.round(r.invested).toLocaleString()}</div>
+                    <div class="cell-right font-bold text-black">¥${Math.round(r.cumPrincipal).toLocaleString()}</div>
+                    <div class="cell-right font-bold text-black">¥${Math.round(r.asset).toLocaleString()}</div>
+                    <div class="cell-center font-bold text-blue-600">${r.roi}%</div>
+                    <div class="cell-center font-bold ${parseFloat(r.growth)>=0?'txt-profit':'txt-loss'}">${parseFloat(r.growth)>0?'+':''}${r.growth}%</div>
+                </div>`).join('');
+            
+            document.getElementById('future-monthly-amt').value = monthlyAmt;
+            renderFutureOptions();
+            document.getElementById('result-area').classList.remove('hidden');
+        }
+
+        function adjustFutureMonthly(delta) {
+            const input = document.getElementById('future-monthly-amt');
+            let val = parseFloat(input.value) || 0;
+            val += delta;
+            if (val < 0) val = 0;
+            input.value = val;
+        }
+
+        function renderFutureOptions() {
+            const rWrap = document.getElementById('future-rates-wrap'), rOpts =[{l:'回测年化',v:results.cagr,id:'f1'}, {l:'纳指近10年',v:18.2,id:'f2'}, {l:'历史均值',v:12.0,id:'f3'}, {l:'自定义',v:null,id:'f4'}];
+            rWrap.innerHTML = rOpts.map((o,i) => `<div onclick="setRate('${o.id}', ${o.v})" id="${o.id}" class="selector-box transition-all ${i===0?'selector-active':''}"><p class="text-[9px] uppercase font-bold">${o.l}</p><p class="text-base font-bold mt-1">${o.v ? o.v.toFixed(1)+'%' : '--'}</p></div>`).join('');
+            selectedFutureRate = results.cagr;
+
+            const yWrap = document.getElementById('future-years-wrap'), yOpts =[5, 10, 15, 20, 30, null];
+            yWrap.innerHTML = yOpts.map((v,i) => `<div onclick="setYears(this, ${v})" class="selector-box transition-all ${v===10?'selector-active':''}"><span class="yr-num">${v||'?'}</span><span class="yr-unit">${v?'YEARS':'自定义'}</span></div>`).join('');
+            selectedFutureYears = 10;
+        }
+
+        function setRate(id, v) {
+            document.querySelectorAll('#future-rates-wrap .selector-box').forEach(d => d.classList.remove('selector-active'));
+            document.getElementById(id).classList.add('selector-active');
+            document.getElementById('custom-rate-input-box').classList.toggle('hidden', id !== 'f4');
+            selectedFutureRate = v;
+        }
+
+        function setYears(el, v) {
+            document.querySelectorAll('#future-years-wrap .selector-box').forEach(d => d.classList.remove('selector-active'));
+            el.classList.add('selector-active');
+            document.getElementById('custom-years-box').classList.toggle('hidden', v !== null);
+            selectedFutureYears = v;
+        }
+
+        // 修复滑动卡顿：生成海报时锁定底层屏幕滚动
+        function showPoster() {
+            const finalRate = selectedFutureRate || parseFloat(document.getElementById('custom-rate-val').value);
+            const finalYears = selectedFutureYears || parseFloat(document.getElementById('custom-years-val').value);
+            const fMonthly = parseFloat(document.getElementById('future-monthly-amt').value) || 0;
+            const mRate = Math.pow(1 + finalRate/100, 1/12) - 1;
+            const months = finalYears * 12;
+            const fAsset = results.finalAsset * Math.pow(1 + mRate, months) + fMonthly * (Math.pow(1 + mRate, months) - 1) / mRate;
+            const fTotalPrincipal = results.totalInvested + (fMonthly * months);
+
+            const profit = results.finalAsset - results.totalInvested;
+            document.getElementById('p-date-range').innerText = results.slice[0][0] + " - " + results.slice[results.slice.length-1][0];
+            document.getElementById('p-current-asset').innerText = '¥' + Math.round(results.finalAsset).toLocaleString();
+            document.getElementById('p-current-profit').innerText = (profit >= 0 ? '+' : '') + '¥' + Math.round(profit).toLocaleString();
+            document.getElementById('p-current-profit').className = 'text-3xl font-bold tracking-tighter ' + (profit >= 0 ? 'txt-profit' : 'txt-loss');
+            document.getElementById('p-future-val').innerText = '¥' + Math.round(fAsset).toLocaleString();
+            document.getElementById('p-future-cost').innerText = '¥' + Math.round(fTotalPrincipal).toLocaleString();
+            document.getElementById('p-rate-label').innerText = finalRate.toFixed(1);
+            document.getElementById('p-future-years-label').innerText = finalYears;
+
+            const ctx = document.getElementById('posterGrowthChart').getContext('2d');
+            if(window.pChart) window.pChart.destroy();
+            window.pChart = new Chart(ctx, { type: 'line', data: { labels:['S','M','E'], datasets: [{ data:[0, results.finalAsset, fAsset], borderColor: '#3b82f6', borderWidth: 8, pointRadius: 0, tension: 0.4 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: false }, scales: { x: { display: false }, y: { display: false } } } });
+
+            setTimeout(() => {
+                html2canvas(document.getElementById('poster-source'), { scale: 3, useCORS: true }).then(canvas => {
+                    const out = document.getElementById('img-out'); out.innerHTML = '';
+                    const img = new Image(); img.src = canvas.toDataURL(); img.className = "w-full h-auto rounded-[24px]";
+                    out.appendChild(img); 
+                    
+                    // 弹窗出现时，锁定底层的滚动条，防止滑动穿透导致卡顿感
+                    document.body.style.overflow = 'hidden'; 
+                    document.getElementById('modal').classList.remove('hidden');
+                });
+            }, 600);
+        }
+
+        // 关闭弹窗恢复底层屏幕滚动
+        function closeModal() {
+            document.body.style.overflow = '';
+            document.getElementById('modal').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>
